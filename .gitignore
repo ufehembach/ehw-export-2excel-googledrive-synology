@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Excel results
+*.xlsx
+
+# Local working data
+ehw+.xlsx
+
+# Ignore images and synced drive content
+myEHW+GoogleDrive/*
+!myEHW+GoogleDrive/.keep
+
+# Backup files
+*.bak
+*.tmp

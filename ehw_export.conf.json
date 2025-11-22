@@ -1,0 +1,9 @@
+{
+    "source_base_dir": "../EHW+GoogleDrive",
+    "target_base_dir": "./myEHW+GoogleDrive",
+    "folders": [
+        "DBMP",
+        "H1"
+    ]
+}
+
