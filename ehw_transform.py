@@ -103,6 +103,21 @@ def build_yearly_view(df):
             days_list.append((row["Date"] - row["PrevDate"]).days)
     df_year["Days"] = days_list
 
+    # --- Column ordering ---
+    desired_order = [
+        "Object", "Room", "CounterName", "CounterId",
+        "CounterType", "CounterUnit", "Date_Full", "Value_Num",
+        "JSON_Value", "JSON_RawValue", "JSON_Delta", "JSON_DeltaPerDay",
+        "JSON_Days", "JSON_Reset", "JSON_ResetAt", "JSON_ReadingMethod",
+        "JSON_Error",
+        "MyPrevValue", "MyPrevDate", "MyDelta",
+        "MyDeltaPerDay", "MyDays",
+    ]
+
+    cols = [c for c in desired_order if c in df_year.columns] + \
+           [c for c in df_year.columns if c not in desired_order]
+
+    df_year = df_year[cols]
     return df_year
 
 
@@ -212,6 +227,21 @@ def build_monthly_view(df):
             days_list.append((row["Date"] - row["PrevDate"]).days)
     df_month["Days"] = days_list
 
+    # --- Column ordering ---
+    desired_order = [
+        "Object", "Room", "CounterName", "CounterId",
+        "CounterType", "CounterUnit", "Date_Full", "Value_Num",
+        "JSON_Value", "JSON_RawValue", "JSON_Delta", "JSON_DeltaPerDay",
+        "JSON_Days", "JSON_Reset", "JSON_ResetAt", "JSON_ReadingMethod",
+        "JSON_Error",
+        "MyPrevValue", "MyPrevDate", "MyDelta",
+        "MyDeltaPerDay", "MyDays",
+    ]
+
+    cols = [c for c in desired_order if c in df_month.columns] + \
+           [c for c in df_month.columns if c not in desired_order]
+
+    df_month = df_month[cols]
     return df_month
 
 def extract_unit(counter_name: str) -> str:
@@ -335,6 +365,21 @@ def add_delta_columns(df):
     df2["DeltaPerDay"] = delta_per_day
     df2["Days"] = days_list
 
+    # --- Column ordering ---
+    desired_order = [
+        "Object", "Room", "CounterName", "CounterId",
+        "CounterType", "CounterUnit", "Date_Full", "Value_Num",
+        "JSON_Value", "JSON_RawValue", "JSON_Delta", "JSON_DeltaPerDay",
+        "JSON_Days", "JSON_Reset", "JSON_ResetAt", "JSON_ReadingMethod",
+        "JSON_Error",
+        "MyPrevValue", "MyPrevDate", "MyDelta",
+        "MyDeltaPerDay", "MyDays",
+    ]
+
+    cols = [c for c in desired_order if c in df2.columns] + \
+           [c for c in df2.columns if c not in desired_order]
+
+    df2 = df2[cols]
     return df2
 
 def add_table_to_sheet(sheet_name, table_style):

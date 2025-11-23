@@ -373,8 +373,14 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
         if not object_name and room_name:
             object_name = room_name.split('.', 1)[0]
 
+        master_dates = sorted(mv.keys())
+
+        def last_master_value(date_str):
+            candidates = [mv[x] for x in master_dates if x <= date_str]
+            return candidates[-1] if candidates else None
+
         for d in all_dates:
-            base_val = mv.get(d)
+            base_val = last_master_value(d)
             if base_val is None:
                 continue
 
@@ -592,6 +598,8 @@ def get_version():
             stderr=subprocess.DEVNULL,
         ).decode("utf-8").strip()
         if version:
+            if version.startswith("v"):
+                version = version[1:]
             return version
     except Exception:
         pass
@@ -599,7 +607,10 @@ def get_version():
     # Second try: VERSION file
     vfile = root / "VERSION"
     try:
-        return vfile.read_text(encoding="utf-8").strip()
+        version = vfile.read_text(encoding="utf-8").strip()
+        if version.startswith("v"):
+            version = version[1:]
+        return version
     except:
         return "unknown"
 
@@ -607,8 +618,8 @@ def main():
     config = load_config(path=CONFIG_FILE)
     version = get_version()
     print("==============================================")
-    print(f"EHW Exporter v{version}")
-    print("Konfigurationsdatei:", CONFIG_FILE)
+    print(f"EHW Exporter {version} – {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"Config: {CONFIG_FILE}")
     print("==============================================")
     base_sync_dir = Path(config["source_base_dir"]).resolve()
     target_base_dir = Path(config["target_base_dir"]).resolve()
