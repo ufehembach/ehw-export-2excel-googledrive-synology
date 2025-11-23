@@ -19,7 +19,7 @@ import ehw_fix_Images
 
 # --- Debug flag ---
 DEBUG = bool(os.getenv("EHW_DEBUG"))
-DEBUG = True
+DEBUG = DEBUG
 
 # Image management settings
 IMG_MODE = os.getenv("EHW_IMG_MODE", "copy").lower()  # copy | symlink
@@ -145,6 +145,8 @@ def copy_canonical_image(
     room_uuid: str | None,
     object_name: str | None,
     room_name: str | None,
+    counter_name: str | None,
+    date_full: str | None,
     visible_root: Path,
     verbose: bool = False,
     canon_idx: dict | None = None
@@ -181,7 +183,10 @@ def copy_canonical_image(
     if verbose:
         print(f"[IMG] ensure dest_dir={dest_dir}")
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / file_name
+    safe_counter = safe_name(counter_name) if counter_name else "unknown"
+    safe_date = date_full.replace("-", "") if date_full else "nodate"
+    new_name = f"{safe_counter}_{safe_date}_{file_name}"
+    dest = dest_dir / new_name
     if not dest.exists():
         if IMG_MODE == "symlink":
             if verbose:
@@ -206,7 +211,7 @@ def cleanup_old_excels(folder: Path, prefix: str):
         old_file = files.pop(0)
         try:
             old_file.unlink()
-            print(f"[Cleanup] Gelöscht: {old_file}")
+            print(f"[Cleanup] removed {old_file.name}")
         except Exception as e:
             print(f"[WARN] Konnte {old_file} nicht löschen: {e}")
 
@@ -215,12 +220,25 @@ ALL_ROWS = []
 
 def process_folder(sync_dir: Path, target_base_dir: Path):
     json_path = sync_dir / f"{sync_dir.name}.json"
+    print("\n----------------------------------------------")
+    print(f"Bearbeite Ordner: {sync_dir.name}")
+    print("----------------------------------------------")
     if not json_path.exists():
         print(f"[WARN] JSON fehlt: {json_path}")
         return
 
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    # oldest & newest entry date
+    all_dates = []
+    for c in data.get("counters", []):
+        for e in c.get("entries", {}).get("entries", []):
+            _o,_y,_ym,df = parse_date_variants(e.get("date"))
+            if df:
+                all_dates.append(df)
+    if all_dates:
+        print(f"  Ältester Wert: {min(all_dates)}")
+        print(f"  Neuester Wert: {max(all_dates)}")
 
     # Map each roomId (UUID) to its cleartext name
     room_map = {}
@@ -230,9 +248,9 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
         if rid:
             room_map[rid] = rname
     # canonical source and visible target roots for images
-    canonical_root = target_base_dir / f".{sync_dir.name}"
-    visible_images_root = target_base_dir / f"{sync_dir.name}"
     object_uuid = data.get("objectId")
+    canonical_root = target_base_dir / f".{object_uuid}"
+    visible_images_root = target_base_dir
     if DEBUG:
         print(f"[DBG] canonical_root={canonical_root}")
         print(f"[DBG] visible_root={visible_images_root}")
@@ -257,12 +275,12 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
                 room_uuid=counter.get("roomId"),
                 object_name=object_name,
                 room_name=room_name,
+                counter_name=counter.get("counterName"),
+                date_full=date_full,
                 visible_root=visible_images_root,
                 verbose=DEBUG,
                 canon_idx=canon_idx,
             )
-            if DEBUG and not entry.get("localImageFileName"):
-                print(f"[DBG] no localImageFileName for counter={counter.get('counterName')} date={entry.get('date')}")
             if dest_path:
                 expected_files.append(dest_path)
                 try:
@@ -295,12 +313,113 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
                 row["__BildAbs"] = dest_path.resolve().as_posix()
             rows.append(row)
 
+    # --- Virtual counter processing ---
+    # Build lookup of counters by UUID
+    counter_by_uuid = {c.get("uuid"): c for c in data.get("counters", [])}
+
+    # Extract virtual counters
+    virtual_counters = [c for c in data.get("counters", []) if c.get("counterType") == "VIRTUAL"]
+
+    # Helper: extract entries as dict date_full -> numeric value
+    def extract_value_map(counter_obj):
+        m = {}
+        for e in counter_obj.get("entries", {}).get("entries", []):
+            _o, _y, _ym, dfull = parse_date_variants(e.get("date"))
+            v = parse_value_numeric(e.get("value"))
+            if dfull and v is not None:
+                m[dfull] = v
+        return m
+
+    # Process each virtual counter
+    for vctr in virtual_counters:
+        vcdata = vctr.get("virtualCounterData") or {}
+        master_uuid = vcdata.get("masterCounterUuid")
+        add_uuids = vcdata.get("counterUuidsToBeAdded") or []
+        sub_uuids = vcdata.get("counterUuidsToBeSubtracted") or []
+
+        if not master_uuid or master_uuid not in counter_by_uuid:
+            continue  # skip invalid
+
+        master = counter_by_uuid.get(master_uuid)
+        adds = [counter_by_uuid[u] for u in add_uuids if u in counter_by_uuid]
+        subs = [counter_by_uuid[u] for u in sub_uuids if u in counter_by_uuid]
+
+        # --- Unit fallback: derive from master name ---
+        unit = master.get("counterUnit")
+        if not unit:
+            mname = master.get("counterName", "").lower()
+            if "wasser" in mname:
+                unit = "m3"
+            elif "strom" in mname:
+                unit = "kwh"
+            elif "wärme" in mname or "waerme" in mname:
+                unit = "kwh"
+            else:
+                unit = "unknown"
+
+        # Build value maps
+        mv = extract_value_map(master)
+        add_maps = [extract_value_map(c) for c in adds]
+        sub_maps = [extract_value_map(c) for c in subs]
+
+        # Collect all dates
+        all_dates = sorted(set(mv.keys()) | set().union(*[m.keys() for m in add_maps]) | set().union(*[m.keys() for m in sub_maps]))
+
+        # Room/Object resolution
+        room_name, object_name = resolve_room_and_object(vctr, room_map)
+        # fallback if room not found
+        if not room_name:
+            room_name = vctr.get("counterName") or "Virtual"
+        if not object_name and room_name:
+            object_name = room_name.split('.', 1)[0]
+
+        for d in all_dates:
+            base_val = mv.get(d)
+            if base_val is None:
+                continue
+
+            add_val = sum(am.get(d, 0) for am in add_maps)
+            sub_val = sum(sm.get(d, 0) for sm in sub_maps)
+            virt_val = base_val + add_val - sub_val
+
+            # Build row
+            row = {
+                "Object": object_name,
+                "Room": room_name,
+                "CounterName": vctr.get("counterName"),
+                "Bild": "",
+                "CounterType": "VIRTUAL",
+                "CounterUnit": unit,
+                "CounterId": "",
+                "RoomId": vctr.get("roomId"),
+                "Date_Orig": datetime.strptime(d, "%Y-%m-%d").strftime("%d.%m.%Y"),
+                "Date_Year": d[:4],
+                "Date_YearMonth": d[:7],
+                "Date_Full": d,
+                "Value_Orig": virt_val,
+                "Value_Num": virt_val,
+            }
+            rows.append(row)
+
     df = pd.DataFrame(rows)
+    # Sort the raw dataframe for cleaner Excel output
+    if "Room" in df.columns and "CounterName" in df.columns and "Date_Full" in df.columns:
+        df = df.sort_values(["Room", "CounterName", "Date_Full"], ascending=[True, True, True])
     # --- Add delta/prev/days for raw data ---
     from ehw_transform import add_delta_columns
     df = add_delta_columns(df)
     df["_SourceFolder"] = sync_dir.name
     ALL_ROWS.append(df.copy())
+    print("  --- Zählerübersicht ---")
+    grouped = {}
+    for idx, r in df.iterrows():
+        key = (r["Room"], r["CounterName"])
+        grouped.setdefault(key, {"count":0, "last":None})
+        grouped[key]["count"] += 1
+        grouped[key]["last"] = r["Date_Full"]
+    for (room, cname), info in sorted(grouped.items(), key=lambda x: (str(x[0][0]), str(x[0][1]))):
+        last = str(info["last"]).split(" ")[0] if info["last"] else "-"
+        print(f"    {room}  T:{cname}  #{info['count']}  last:{last}")
     # Ensure column order and keep helper path for now
     desired_order = [
         "Object", "Room", "CounterName", "Bild",
@@ -340,7 +459,7 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
     latest_path = target_base_dir / f"{sync_dir.name}.xlsx"
     try:
         shutil.copy2(excel_path, latest_path)
-        print(f"[OK] Latest Excel aktualisiert: {latest_path}")
+        print(f"[OK] latest XLS updated: {latest_path.name}")
     except Exception as e:
         print(f"[WARN] Konnte Latest Excel nicht schreiben: {latest_path} -> {e}")
 
@@ -402,8 +521,9 @@ def export_with_format(df, file_path, script_name):
             actual_cols = idx
 
     if actual_cols > 0 and ws.max_row >= 3:
-        last_col_letter = ws.cell(row=3, column=actual_cols).column_letter
         last_row = ws.max_row
+        last_col_letter = ws.cell(row=3, column=actual_cols).column_letter
+        # Force full range so virtual rows always included
         table_range = f"A3:{last_col_letter}{last_row}"
 
         # Always use fixed table name "tblEHW" for Zählerdaten
@@ -456,11 +576,40 @@ def export_with_format(df, file_path, script_name):
     add_table_to_sheet("Zählerdaten_Monat", "TableStyleMedium7")
 
     wb.save(file_path)
-    print(f"[OK] Excel gespeichert: {file_path}")
+    print(f"[OK] XLS saved: {file_path.name}")
 
 # --- Main ---
+def get_version():
+    """Return version based on git tag or fallback VERSION file."""
+    root = Path(__file__).parent
+
+    # First try: git describe
+    try:
+        import subprocess
+        version = subprocess.check_output(
+            ["git", "describe", "--tags", "--dirty", "--always"],
+            cwd=root,
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8").strip()
+        if version:
+            return version
+    except Exception:
+        pass
+
+    # Second try: VERSION file
+    vfile = root / "VERSION"
+    try:
+        return vfile.read_text(encoding="utf-8").strip()
+    except:
+        return "unknown"
+
 def main():
     config = load_config(path=CONFIG_FILE)
+    version = get_version()
+    print("==============================================")
+    print(f"EHW Exporter v{version}")
+    print("Konfigurationsdatei:", CONFIG_FILE)
+    print("==============================================")
     base_sync_dir = Path(config["source_base_dir"]).resolve()
     target_base_dir = Path(config["target_base_dir"]).resolve()
     target_base_dir.mkdir(parents=True, exist_ok=True)
@@ -486,6 +635,6 @@ def main():
 
         combined_path = target_base_dir / "ehw+.xlsx"
         export_with_format(combined, combined_path, script_name="ehw_export_combined")
-    print(f"[OK] Kombiniertes Excel gespeichert: {combined_path}")
+        print(f"[OK] combined XLS saved: {combined_path.name}")
 if __name__ == "__main__":
     main()

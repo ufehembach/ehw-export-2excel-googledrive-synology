@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 from shutil import copy2, move
 from typing import Optional, Dict
+from datetime import datetime
 
 SLASH_CONFLICT_RE = re.compile(r"\s*\(slash conflict\)$")
 NUMBERED_COPY_RE = re.compile(r"\s\((\d+)\)$")
@@ -113,20 +114,23 @@ def safe_name(s: str) -> str:
 
 def process_folder(src_folder: Path, dst_base: Path, mode: str, apply: bool, verbose: bool):
     # 1) alte Struktur (falls vorhanden) -> .<folder>
-    ensure_legacy_dot_folder(dst_base, src_folder.name)
 
     # 2) UUID->Name Map laden
     js = load_folder_json(src_folder)
     uuid2name = collect_uuid_name_map(js) if js else {}
 
-    # 3) kanonischer, versteckter Ablageort <dst>/.<foldername>
-    canonical_root = dst_base / f".{src_folder.name}"
+    # 3) Neue Struktur: Basis nur base, ohne versteckten Ordner-Layer
+    canonical_root = dst_base
     canonical_root.mkdir(parents=True, exist_ok=True)
 
     entries = sorted(p for p in src_folder.iterdir() if p.is_file())
     moved = skipped = errors = 0
+    total = 0
+    last_date = None
 
     for src in entries:
+        total += 1
+        last_date = datetime.now().strftime("%Y-%m-%d")
         name = src.name
         if not SLASH_CONFLICT_RE.search(name):
             skipped += 1
@@ -147,37 +151,31 @@ def process_folder(src_folder: Path, dst_base: Path, mode: str, apply: bool, ver
             # Kandidat für die Originaldatei MIT dem ursprünglichen '(slash conflict)'-Suffix
             original_with_suffix = f"{base_wo_ext[:mnum.start()]}{ext} (slash conflict)"
             if (src_folder / original_with_suffix).exists():
-                if verbose:
-                    print(f"~ IGNORE numbered duplicate (original exists): {src.name}")
                 skipped += 1
                 continue
 
-        # Ziel: versteckte Ablage unter .<Folder>/<Object>/<Room>/<Datei>
-        # Objekt/Raum aus dem Dateinamen (UUIDs) ableiten und mit uuid2name mappen
+        # Ziel: UUID-basiertes Routing
         obj_uuid, room_uuid, remainder = parse_dest_parts_from_filename(base_wo_ext, ext)
-        obj_label = uuid2name.get(obj_uuid, obj_uuid or "unknown-object")
-        room_label = uuid2name.get(room_uuid, room_uuid or "unknown-room")
-        dst_dir = canonical_root / safe_name(str(obj_label)) / safe_name(str(room_label))
+        if not obj_uuid:
+            obj_uuid = "unknown-object"
+        if not room_uuid:
+            room_uuid = "unknown-room"
+        counter_uuid = remainder.split("_")[0] if "_" in remainder else "unknown-counter"
+        dst_dir = canonical_root / f".{obj_uuid}" / room_uuid / counter_uuid
         dst_dir.mkdir(parents=True, exist_ok=True)
         dst = dst_dir / remainder
 
         try:
             if dst.exists():
                 if same_file(src, dst):
-                    if verbose:
-                        print(f"= SKIP (identisch): {dst}")
                     skipped += 1
                     continue
                 else:
-                    if verbose:
-                        print(f"~ OVERWRITE: {dst}")
                     if apply:
                         copy2(src, dst)
                     moved += 1
                     continue
 
-            if verbose and not apply:
-                print(f"DRYRUN -> {dst}")
             if apply:
                 if mode == "copy":
                     copy2(src, dst)
@@ -195,13 +193,14 @@ def process_folder(src_folder: Path, dst_base: Path, mode: str, apply: bool, ver
                     os.symlink(rel_target, dst)
                 else:
                     raise ValueError(f"Unknown mode: {mode}")
+
             moved += 1
         except Exception as e:
             errors += 1
             print(f"! ERROR {src} -> {dst}: {e}")
 
     if verbose:
-        print(f"Summary {src_folder.name} -> .{src_folder.name}: moved={moved} skipped={skipped} errors={errors}")
+        print(f"bilder {src_folder.name}: {total} bilder gesamt, {moved} neu kopiert, last {last_date}")
     return moved, skipped, errors
 
 def main():
