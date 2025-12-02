@@ -266,6 +266,14 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
             date_orig, date_year, date_yearmonth, date_full = parse_date_variants(entry.get("date"))
             value_orig = entry.get("value")
             value_num = parse_value_numeric(value_orig)
+            # --- QBM/m3 conversion logic ---
+            remark = ""
+            unit_str = str(counter.get("counterUnit", "") or "")
+            # Check for water unit qbm (case-insensitive, also allow in name)
+            if unit_str.lower() == "qbm" or "qbm" in unit_str.lower():
+                if value_num is not None:
+                    value_num = value_num / 1000
+                remark = "qbm/1000 applied"
             # Resolve human-readable room and object names
             room_name, object_name = resolve_room_and_object(counter, room_map)
             dest_path: Path | None = copy_canonical_image(
@@ -307,6 +315,14 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
                 "Date_Full": date_full,
                 "Value_Orig": value_orig,
                 "Value_Num": value_num,
+                # --- Placeholders for computed values (to be filled by add_delta_columns) ---
+                "MyPrevValue": None,
+                "MyPrevDate": None,
+                "MyDelta": None,
+                "MyDays": None,
+                "MyPerDay": None,
+                "Bemerkung": remark,
+                "Created": datetime.now().isoformat(),
             }
             # store absolute path for post-write hyperlinking
             if dest_path:
@@ -404,10 +420,18 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
                 "Date_Full": d,
                 "Value_Orig": virt_val,
                 "Value_Num": virt_val,
+                "Remark": "virtual counter",
+                "Created": datetime.now().isoformat(),
             }
             rows.append(row)
 
     df = pd.DataFrame(rows)
+    # Remove all JSON_* columns if present
+    json_cols = [
+        "JSON_RawValue", "JSON_Value", "JSON_Delta", "JSON_RawDelta",
+        "JSON_Consumption", "JSON_ConsumptionType", "JSON_PeriodStart", "JSON_PeriodEnd"
+    ]
+    df = df.drop(columns=[c for c in json_cols if c in df.columns], errors="ignore")
     # Sort the raw dataframe for cleaner Excel output
     if "Room" in df.columns and "CounterName" in df.columns and "Date_Full" in df.columns:
         df = df.sort_values(["Room", "CounterName", "Date_Full"], ascending=[True, True, True])
@@ -431,7 +455,10 @@ def process_folder(sync_dir: Path, target_base_dir: Path):
         "Object", "Room", "CounterName", "Bild",
         "CounterType", "CounterUnit", "CounterId", "RoomId",
         "Date_Orig", "Date_Year", "Date_YearMonth", "Date_Full",
-        "Value_Orig", "Value_Num", "__BildAbs"
+        "Value_Orig", "Value_Num", "__BildAbs",
+        # --- computed columns appended at the end ---
+        "MyPrevValue", "MyPrevDate", "MyDelta", "MyDays", "MyPerDay",
+        "Remark", "Created"
     ]
     df = df.reindex(columns=[c for c in desired_order if c in df.columns])
 
